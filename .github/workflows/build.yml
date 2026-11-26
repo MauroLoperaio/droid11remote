@@ -27,10 +27,11 @@ jobs:
           gradle-version: '8.2'
 
       - name: Build Debug APK
+        working-directory: ./helgi-telegram
         run: gradle assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: helgi-remote-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: helgi-telegram/app/build/outputs/apk/debug/*.apk
