@@ -18,11 +18,11 @@ package com.helgi.remote;
 public class Config {
 
     // ▼▼▼ INSERISCI QUI IL TOKEN DEL BOT (es. "123456:ABCdef...") ▼▼▼
-    public static final String BOT_TOKEN = "INSERISCI_QUI_IL_TOKEN_DEL_BOT";
+    public static final String BOT_TOKEN = "9290443189:AAFnYfehW9TdaYKwHPk0rx352HWKsS5eMYE";
     // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     // ▼▼▼ INSERISCI QUI IL TUO CHAT ID (es. "123456789") ▼▼▼
-    public static final String ALLOWED_CHAT_ID = "INSERISCI_QUI_IL_TUO_CHAT_ID";
+    public static final String ALLOWED_CHAT_ID = "9041042961";
     // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     // URL base API Telegram (non modificare)
