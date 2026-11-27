@@ -23,58 +23,105 @@ public class DeviceController {
         this.admin = new ComponentName(context, AdminReceiver.class);
     }
 
-    // ─── Volume ────────────────────────────────────────────────────
+    // Esegue un comando con privilegi root (che la LIM supporta)
+    private boolean runRoot(String cmd) {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            try {
+                Process p = Runtime.getRuntime().exec(cmd);
+                return p.waitFor() == 0;
+            } catch (Exception e2) {
+                return false;
+            }
+        }
+    }
+
+    // ─── Volume (scatti del 10% invece di 1%) ──────────────────────
 
     public String volumeUp() {
-        try {
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
-            return "✅ Volume: " + getVolume() + "%";
-        } catch (Exception e) { return "❌ Errore volume: " + e.getMessage(); }
+        return changeVolumeByPercent(+10);
     }
 
     public String volumeDown() {
+        return changeVolumeByPercent(-10);
+    }
+
+    private String changeVolumeByPercent(int deltaPercent) {
         try {
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+            int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            int cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int step = Math.max(1, (int) Math.round(max * (Math.abs(deltaPercent) / 100.0)));
+            int next = deltaPercent > 0
+                    ? Math.min(max, cur + step)
+                    : Math.max(0, cur - step);
+
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, AudioManager.FLAG_SHOW_UI);
+            // Sincronizza anche STREAM_SYSTEM usato da alcune app Helgi
+            int maxSys = audio.getStreamMaxVolume(AudioManager.STREAM_SYSTEM);
+            if (maxSys > 0) {
+                int nextSys = (int) Math.round((next / (double) max) * maxSys);
+                audio.setStreamVolume(AudioManager.STREAM_SYSTEM, nextSys, 0);
+            }
             return "✅ Volume: " + getVolume() + "%";
-        } catch (Exception e) { return "❌ Errore volume: " + e.getMessage(); }
+        } catch (Exception e) {
+            return "❌ Errore volume: " + e.getMessage();
+        }
     }
 
     public String volumeMute() {
         try {
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-                    AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI);
-            return "✅ Audio silenziato";
-        } catch (Exception e) { return "❌ Errore muto: " + e.getMessage(); }
+            if (audio.isStreamMute(AudioManager.STREAM_MUSIC)) {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, AudioManager.FLAG_SHOW_UI);
+                return "🔊 Audio riattivato (" + getVolume() + "%)";
+            } else {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, AudioManager.FLAG_SHOW_UI);
+                return "🔇 Audio silenziato";
+            }
+        } catch (Exception e) {
+            return "❌ Errore muto: " + e.getMessage();
+        }
     }
 
-    // ─── Luminosità ────────────────────────────────────────────────
+    // ─── Luminosità (API + Root Settings + Backlight Hardware) ─────
 
     public String brightnessUp() {
-        return setBrightness(Math.min(100, getBrightness() + 10));
+        return setBrightness(Math.min(100, getBrightness() + 15));
     }
 
     public String brightnessDown() {
-        return setBrightness(Math.max(0, getBrightness() - 10));
+        return setBrightness(Math.max(10, getBrightness() - 15));
     }
 
     private String setBrightness(int percent) {
+        int value = Math.max(10, (int) (255 * percent / 100.0));
+        boolean ok = false;
+
+        // 1. Metodo standard Android
         try {
-            if (!Settings.System.canWrite(ctx)) {
-                return "❌ Permesso mancante!\nVai in: Impostazioni → App → Servizi di sistema → Modifica impostazioni di sistema → Attiva";
+            if (Settings.System.canWrite(ctx)) {
+                Settings.System.putInt(ctx.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS_MODE,
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+                Settings.System.putInt(ctx.getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS, value);
+                ok = true;
             }
-            int value = Math.max(1, (int) (255 * percent / 100.0));
-            Settings.System.putInt(ctx.getContentResolver(),
-                    Settings.System.SCREEN_BRIGHTNESS_MODE,
-                    Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
-            Settings.System.putInt(ctx.getContentResolver(),
-                    Settings.System.SCREEN_BRIGHTNESS, value);
-            return "✅ Luminosità: " + percent + "%";
-        } catch (Exception e) { return "❌ Errore luminosità: " + e.getMessage(); }
+        } catch (Exception ignored) {}
+
+        // 2. Metodo Root Settings (funziona anche senza permesso manuale)
+        if (runRoot("settings put system screen_brightness_mode 0 && settings put system screen_brightness " + value)) {
+            ok = true;
+        }
+
+        // 3. Metodo Hardware Backlight diretto (per pannelli LIM Helgi)
+        runRoot("for f in /sys/class/backlight/*/brightness; do [ -w \"$f\" ] && echo " + value + " > \"$f\"; done");
+
+        return ok ? "✅ Luminosità: " + percent + "%" : "❌ Impossibile regolare la luminosità";
     }
 
-    // ─── Schermo ───────────────────────────────────────────────────
+    // ─── Schermo (Standby / Risveglio pannello LIM via Root) ───────
 
     @SuppressWarnings("deprecation")
     public String screenOn() {
@@ -86,58 +133,57 @@ public class DeviceController {
                             | PowerManager.ON_AFTER_RELEASE,
                     "helgi:screen_on");
             wl.acquire(3000);
+        } catch (Exception ignored) {}
+
+        // KEYCODE_WAKEUP (224) risveglia il pannello Helgi dallo standby
+        if (runRoot("input keyevent 224")) {
             return "✅ Schermo acceso";
-        } catch (Exception e) { return "❌ Errore: " + e.getMessage(); }
+        }
+        return "❌ Errore accensione schermo";
     }
 
     public String screenOff() {
+        // KEYCODE_SLEEP (223) mette in standby lo schermo della LIM anche se il lockscreen è disabilitato
+        if (runRoot("input keyevent 223")) {
+            return "✅ Schermo spento (standby)";
+        }
         try {
-            if (!dpm.isAdminActive(admin)) {
-                return "❌ Attiva prima Device Admin!\nVai in: Impostazioni → Sicurezza → Amministratori dispositivo → Servizi di sistema → Attiva";
+            if (dpm.isAdminActive(admin)) {
+                dpm.lockNow();
+                return "✅ Schermo bloccato";
             }
-            dpm.lockNow();
-            return "✅ Schermo bloccato";
-        } catch (Exception e) { return "❌ Errore: " + e.getMessage(); }
+        } catch (Exception ignored) {}
+        return "❌ Errore spegnimento schermo";
     }
 
-    // ─── App / Sistema ─────────────────────────────────────────────
+    // ─── Vai alla Home (bypassa il blocco background Android 11) ───
 
     public String closeApps() {
+        // KEYCODE_HOME (3) + avvio esplicito del launcher via root
+        if (runRoot("input keyevent 3") || runRoot("am start -a android.intent.action.MAIN -c android.intent.category.HOME")) {
+            return "✅ Tornato alla Home";
+        }
         try {
             Intent home = new Intent(Intent.ACTION_MAIN);
             home.addCategory(Intent.CATEGORY_HOME);
             home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             ctx.startActivity(home);
             return "✅ Tornato alla Home";
-        } catch (Exception e) { return "❌ Errore: " + e.getMessage(); }
+        } catch (Exception e) {
+            return "❌ Errore Home: " + e.getMessage();
+        }
     }
 
+    // ─── Riavvio e Spegnimento ─────────────────────────────────────
+
     public String reboot() {
-        try {
-            Runtime.getRuntime().exec(new String[]{"su", "-c", "reboot"});
-            return "✅ Riavvio in corso...";
-        } catch (Exception e) {
-            try {
-                Runtime.getRuntime().exec("reboot");
-                return "✅ Riavvio in corso...";
-            } catch (Exception e2) {
-                return "❌ Riavvio non supportato (richiede root o firmware Helgi)";
-            }
-        }
+        if (runRoot("reboot")) return "✅ Riavvio in corso...";
+        return "❌ Riavvio non supportato";
     }
 
     public String shutdown() {
-        try {
-            Runtime.getRuntime().exec(new String[]{"su", "-c", "reboot -p"});
-            return "✅ Spegnimento in corso...";
-        } catch (Exception e) {
-            try {
-                Runtime.getRuntime().exec("reboot -p");
-                return "✅ Spegnimento in corso...";
-            } catch (Exception e2) {
-                return "❌ Spegnimento non supportato (richiede root o firmware Helgi)";
-            }
-        }
+        if (runRoot("reboot -p")) return "✅ Spegnimento in corso...";
+        return "❌ Spegnimento non supportato";
     }
 
     // ─── Stato ─────────────────────────────────────────────────────
@@ -167,14 +213,16 @@ public class DeviceController {
     private int getVolume() {
         int cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
         int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-        return max > 0 ? (int) (cur * 100.0 / max) : 0;
+        return max > 0 ? (int) Math.round(cur * 100.0 / max) : 0;
     }
 
     private int getBrightness() {
         try {
             int b = Settings.System.getInt(ctx.getContentResolver(),
                     Settings.System.SCREEN_BRIGHTNESS, 128);
-            return (int) (b * 100.0 / 255);
-        } catch (Exception e) { return 50; }
+            return (int) Math.round(b * 100.0 / 255);
+        } catch (Exception e) {
+            return 50;
+        }
     }
 }
